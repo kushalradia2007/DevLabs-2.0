@@ -117,8 +117,8 @@ How? You define the shape with Pydantic and tell Claude to match it:
 
 ```python
 from pydantic import BaseModel
-import anthropic
-import json
+from langchain_groq import ChatGroq
+from dotenv import load_dotenv
 
 class ProductReview(BaseModel):
     product: str
@@ -126,28 +126,24 @@ class ProductReview(BaseModel):
     rating: float
     sentiment: str   # "positive", "negative", "neutral"
 
-client = anthropic.Anthropic()
-
-response = client.messages.create(
-    model="claude-opus-4-7",
-    max_tokens=512,
-    system="""Extract product info and return ONLY a JSON object with these fields:
-    product (str), price (int in INR), rating (float 0-5), sentiment (str).
-    Return raw JSON, no markdown, no explanation.""",
-    messages=[{
-        "role": "user",
-        "content": "I bought the iPhone 15 for about 80k. It's amazing, easily 4.5/5."
-    }]
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    temperature=0
 )
 
-raw_json = response.content[0].text
-data = ProductReview.model_validate_json(raw_json)  # validates AND parses
-print(data.product)    # "iPhone 15"
-print(data.price)      # 80000
-print(data.rating)     # 4.5
-```
+structured_llm = llm.with_structured_output(ProductReview)
+review_text = "I bought the iPhone 15 for about 80k. It's amazing, easily 4.5/5."
 
-`model_validate_json` will throw a clear `ValidationError` if Claude returned garbage. You catch that and retry or log it.
+response = llm.invoke(review_text)
+print(response.content)
+
+structured_response=structured_llm.invoke(review_text)
+
+print(structured_response.product) # type: ignore
+print(structured_response.price) # type: ignore
+print(structured_response.rating) # type: ignore
+print(structured_response.sentiment) # type: ignore
+```
 
 ---
 
@@ -166,17 +162,76 @@ class WeatherInput(BaseModel):
     city: str
     unit: str = "celsius"
 
+# Function to fetch weather information
 def get_weather(city: str, unit: str = "celsius") -> str:
-    """Fetch real weather data from wttr.in."""
-    fmt = "j1"  # JSON format
-    response = requests.get(f"https://wttr.in/{city}?format={fmt}", timeout=5)
+    """
+    Fetch current weather data from wttr.in API.
+
+    Parameters:
+    city (str)  -> Name of the city
+    unit (str)  -> Temperature unit ("celsius" or "fahrenheit")
+
+    Returns:
+    str -> Formatted weather information
+    """
+
+    # API format parameter
+    # "j1" tells wttr.in to return data in JSON format
+    fmt = "j1"
+
+    # Send GET request to wttr.in API
+    # Example URL:
+    # https://wttr.in/Delhi?format=j1
+    response = requests.get(
+        f"https://wttr.in/{city}?format={fmt}",
+        timeout=5  # wait maximum 5 seconds
+    )
+
+    # Raise an error if request failed
+    # Example:
+    # 404 error
+    # connection error
+    # server error
     response.raise_for_status()
 
+    # Convert JSON response into Python dictionary
     data = response.json()
+
+    # Extract current weather information
+    # "current_condition" is a list
+    # [0] gets first item from that list
     current = data["current_condition"][0]
-    temp = current["temp_C"] if unit == "celsius" else current["temp_F"]
+
+    # Select temperature unit
+    # If unit is "celsius", use temp_C
+    # Otherwise use temp_F
+    temp = (
+        current["temp_C"]
+        if unit == "celsius"
+        else current["temp_F"]
+    )
+
+    # Extract weather description
+    # Example:
+    # "Sunny"
+    # "Partly cloudy"
     desc = current["weatherDesc"][0]["value"]
-    return f"{temp}°{'C' if unit == 'celsius' else 'F'}, {desc} in {city}"
+
+    # Return formatted weather string
+    # Example:
+    # "32°C, Sunny in Delhi"
+    return (
+        f"{temp}°"
+        f"{'C' if unit == 'celsius' else 'F'}, "
+        f"{desc} in {city}"
+    )
+
+
+# Call the function
+weather = get_weather("Delhi")
+
+# Print output
+print(weather)
 ```
 
 Key things to notice:
@@ -195,78 +250,147 @@ Here's a pattern that keeps everything in one place and uses Pydantic for valida
 ```python
 from pydantic import BaseModel
 from typing import Callable, Any
-import anthropic
+import requests
+from langchain_groq import ChatGroq
+from dotenv import load_dotenv
 
-# 1. Input schema as a Pydantic model
 class WeatherInput(BaseModel):
     city: str
-    unit: str = "celsius"
 
-class NewsInput(BaseModel):
-    topic: str
+
+class SearchInput(BaseModel):
+    query: str
     max_results: int = 3
+
+
+def get_weather(city: str) -> str:
+
+    try:
+
+        res = requests.get(
+            f"https://wttr.in/{city}?format=3",
+            timeout=5
+        )
+
+        res.raise_for_status()
+
+        return res.text.strip()
+
+    except requests.RequestException as e:
+
+        return f"Weather lookup failed: {e}"
+
+
+def search_web(query: str, max_results: int = 3) -> str:
+
+    try:
+
+        url = "https://html.duckduckgo.com/html/"
+
+        res = requests.post(
+            url,
+            data={"q": query},
+            timeout=10,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
+
+        res.raise_for_status()
+
+        html = res.text
+
+        # VERY simple parsing
+        lines = []
+
+        for line in html.split("\n"):
+
+            if 'result__title' in line:
+
+                cleaned = (
+                    line
+                    .replace("<a", "")
+                    .replace("</a>", "")
+                    .strip()
+                )
+
+                lines.append(cleaned)
+
+            if len(lines) >= max_results:
+                break
+
+        if not lines:
+            return "No results found."
+
+        return "\n".join(
+            f"• {line}"
+            for line in lines
+        )
+
+    except requests.RequestException as e:
+
+        return f"Search failed: {e}"
 
 # 2. One class per tool
 class Tool:
+
     def __init__(
         self,
         name: str,
         description: str,
         input_model: type[BaseModel],
         func: Callable[..., str],
-    ) -> None:
+    ):
+
         self.name = name
         self.description = description
         self.input_model = input_model
         self.func = func
 
     def run(self, raw_input: dict[str, Any]) -> str:
-        # Pydantic validates here — bad input = clear error, not silent failure
+
         validated = self.input_model(**raw_input)
-        return self.func(**validated.model_dump())
 
-    def to_claude_definition(self) -> dict:
-        # Convert Pydantic model → Claude tool definition automatically
+        return self.func(
+            **validated.model_dump()
+        )
+
+    def to_groq_tool(self):
+
         return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.input_model.model_json_schema(),
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_model.model_json_schema(),
+            },
         }
+
+#Now you define tools like this:
+
+TOOLS = [
+
+    Tool(
+        "get_weather",
+        "Get current weather for a city.",
+        WeatherInput,
+        get_weather,
+    ),
+
+    Tool(
+        "search_web",
+        "Search the web for a query.",
+        SearchInput,
+        search_web,
+    ),
+]
+
+TOOL_MAP = {
+    t.name: t
+    for t in TOOLS
+}
+
 ```
-
-Now you define tools like this:
-
-```python
-weather_tool = Tool(
-    name="get_weather",
-    description="Get current weather for a city.",
-    input_model=WeatherInput,
-    func=get_weather,   # your actual function
-)
-
-news_tool = Tool(
-    name="get_news",
-    description="Get recent news headlines on a topic.",
-    input_model=NewsInput,
-    func=get_news,
-)
-
-TOOLS: list[Tool] = [weather_tool, news_tool]
-TOOL_MAP: dict[str, Tool] = {t.name: t for t in TOOLS}
-```
-
-And the agent loop becomes clean:
-
-```python
-tool_definitions = [t.to_claude_definition() for t in TOOLS]
-
-# In the ReAct loop:
-for block in response.content:
-    if block.type == "tool_use":
-        tool = TOOL_MAP[block.name]
-        result = tool.run(block.input)   # Pydantic validates here
-```
-
 ---
 
 ## 6. Full Example — Research Agent With Real APIs
@@ -277,16 +401,18 @@ Week 2 — Research Agent
 Uses 2 real APIs: wttr.in (weather) + DuckDuckGo search (no key needed)
 """
 
+import json
 import requests
 from pydantic import BaseModel
 from typing import Callable, Any
-import anthropic
+from langchain_groq import ChatGroq
+from langchain_core.messages import HumanMessage,ToolMessage
 
 
 # ── Tool inputs ──────────────────────────────────────────────
-
 class WeatherInput(BaseModel):
     city: str
+
 
 class SearchInput(BaseModel):
     query: str
@@ -295,122 +421,213 @@ class SearchInput(BaseModel):
 
 # ── Real API functions ────────────────────────────────────────
 
+
 def get_weather(city: str) -> str:
+
     try:
-        res = requests.get(f"https://wttr.in/{city}?format=3", timeout=5)
+
+        res = requests.get(
+            f"https://wttr.in/{city}?format=3",
+            timeout=5
+        )
+
         res.raise_for_status()
+
         return res.text.strip()
+
     except requests.RequestException as e:
+
         return f"Weather lookup failed: {e}"
 
 
 def search_web(query: str, max_results: int = 3) -> str:
+
     try:
-        res = requests.get(
-            "https://api.duckduckgo.com/",
-            params={"q": query, "format": "json", "no_html": 1},
-            timeout=5,
+
+        url = "https://html.duckduckgo.com/html/"
+
+        res = requests.post(
+            url,
+            data={"q": query},
+            timeout=10,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
         )
+
         res.raise_for_status()
-        data = res.json()
-        results = data.get("RelatedTopics", [])[:max_results]
-        if not results:
+
+        html = res.text
+
+        # VERY simple parsing
+        lines = []
+
+        for line in html.split("\n"):
+
+            if 'result__title' in line:
+
+                cleaned = (
+                    line
+                    .replace("<a", "")
+                    .replace("</a>", "")
+                    .strip()
+                )
+
+                lines.append(cleaned)
+
+            if len(lines) >= max_results:
+                break
+
+        if not lines:
             return "No results found."
-        lines = [r.get("Text", "") for r in results if "Text" in r]
-        return "\n".join(f"• {line}" for line in lines)
+
+        return "\n".join(
+            f"• {line}"
+            for line in lines
+        )
+
     except requests.RequestException as e:
+
         return f"Search failed: {e}"
 
 
 # ── Tool class ────────────────────────────────────────────────
 
 class Tool:
+
     def __init__(
         self,
         name: str,
         description: str,
         input_model: type[BaseModel],
         func: Callable[..., str],
-    ) -> None:
+    ):
+
         self.name = name
         self.description = description
         self.input_model = input_model
         self.func = func
 
     def run(self, raw_input: dict[str, Any]) -> str:
-        validated = self.input_model(**raw_input)
-        return self.func(**validated.model_dump())
 
-    def to_claude_definition(self) -> dict:
+        validated = self.input_model(**raw_input)
+
+        return self.func(
+            **validated.model_dump()
+        )
+
+    def to_groq_tool(self):
+
         return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.input_model.model_json_schema(),
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_model.model_json_schema(),
+            },
         }
 
 
 # ── Registry ──────────────────────────────────────────────────
 
-TOOLS: list[Tool] = [
-    Tool("get_weather", "Get current weather for a city.", WeatherInput, get_weather),
-    Tool("search_web", "Search the web for a query.", SearchInput, search_web),
+TOOLS = [
+
+    Tool(
+        "get_weather",
+        "Get current weather for a city.",
+        WeatherInput,
+        get_weather,
+    ),
+
+    Tool(
+        "search_web",
+        "Search the web for a query.",
+        SearchInput,
+        search_web,
+    ),
 ]
-TOOL_MAP: dict[str, Tool] = {t.name: t for t in TOOLS}
+
+TOOL_MAP = {
+    t.name: t
+    for t in TOOLS
+}
 
 
 # ── Agent ─────────────────────────────────────────────────────
 
-class ResearchAgent:
-    def __init__(self) -> None:
-        self.client = anthropic.Anthropic()
-        self.tool_definitions = [t.to_claude_definition() for t in TOOLS]
 
-    def run(self, user_message: str) -> str:
-        messages = [{"role": "user", "content": user_message}]
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    temperature=0
+)
+
+# Bind tools to model
+llm_with_tools = llm.bind_tools(
+    [t.to_groq_tool() for t in TOOLS]
+)
+
+
+class ResearchAgent:
+
+    def run(self, user_message: str):
+
         print(f"\nUser: {user_message}")
 
+        messages = [
+            HumanMessage(content=user_message)
+        ]
+
         while True:
-            response = self.client.messages.create(
-                model="claude-opus-4-7",
-                max_tokens=1024,
-                system="You are a research assistant. Use tools to find real information.",
-                tools=self.tool_definitions,
-                messages=messages,
-            )
 
-            messages.append({"role": "assistant", "content": response.content})
+            # Call LLM
+            response = llm_with_tools.invoke(messages)
 
-            if response.stop_reason == "end_turn":
-                for block in response.content:
-                    if block.type == "text":
-                        return block.text
+            messages.append(response) # type: ignore
 
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    print(f"  → {block.name}({block.input})")
-                    result = TOOL_MAP[block.name].run(block.input)
-                    print(f"  ← {result[:80]}...")
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result,
-                    })
+            # If no tool calls → final answer
+            if not response.tool_calls:
 
-            messages.append({"role": "user", "content": tool_results})
+                return response.content
+
+            # Execute tool calls
+            for tool_call in response.tool_calls:
+
+                tool_name = tool_call["name"]
+
+                tool_args = tool_call["args"]
+
+                print(f"→ {tool_name}({tool_args})")
+
+                result = TOOL_MAP[tool_name].run(tool_args)
+
+                print(f"← {result}")
+
+                # Send tool result back
+                messages.append(
+                    ToolMessage(
+                        content=result,
+                        tool_call_id=tool_call["id"],
+                    ) # type: ignore
+                )
 
 
-if __name__ == "__main__":
-    agent = ResearchAgent()
+agent = ResearchAgent()
 
-    queries = [
-        "What's the weather in Delhi and Mumbai right now?",
-        "Search for recent AI safety news and summarise what you find.",
-    ]
+queries = [
 
-    for q in queries:
-        print(agent.run(q))
-        print("-" * 60)
+    "What's the weather in Delhi and Mumbai right now?",
+
+    "Search for recent AI safety news and summarize them."
+]
+
+for q in queries:
+
+    result = agent.run(q)
+
+    print("\nFinal Answer:")
+    print(result)
+
+    print("-" * 60)
 ```
 
 ---
@@ -428,27 +645,6 @@ Claude uses your **tool description** to decide. Vague descriptions → wrong de
 | `"Weather"` | `"Get current temperature and conditions for a city. Always use this tool — do not guess weather."` |
 
 **Always use this when** in your description is a powerful phrase. It tells Claude: don't try to answer from memory, use this tool.
-
----
-
-## Resources
-
-### Course
-- [DeepLearning.AI – AI Agents in LangGraph](https://deeplearning.ai/short-courses/ai-agents-in-langgraph) ← Weeks 2–3 content here
-
-### Docs
-- [Anthropic Tool Use Docs](https://docs.anthropic.com/en/docs/tool-use) ← read the "How it works" section
-- [Pydantic Docs – BaseModel](https://docs.pydantic.dev/latest/concepts/models/)
-
-### Videos
-- [Prompt Engineering – Function Calling Crash Course](https://youtube.com/@engineerprompt)
-- [AI Anytime – Build an Agent with Tools from Scratch](https://youtube.com/@AIAnytime)
-
-### APIs to try (all free, no credit card)
-- [wttr.in](https://wttr.in) — weather, no key
-- [DuckDuckGo Instant Answer API](https://api.duckduckgo.com/?q=test&format=json) — search, no key
-- [Tavily](https://tavily.com) — better search, free tier
-- [Groq](https://groq.com) — free, fast LLM inference (alternative to Anthropic)
 
 ---
 
