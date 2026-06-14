@@ -1,0 +1,190 @@
+{
+  "name": "Research Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -1600,
+        -1360
+      ],
+      "id": "f040c164-1b94-46c3-8da9-0c72f63a4422",
+      "name": "When chat message received",
+      "webhookId": "3be72f14-ee0a-4ed6-ad1d-d16698feab22"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a helpful assistant with access to a Google Search tool. If the user asks about real-time information, weather, or current events, you MUST use the \"Search google in SearchApi\" tool to look up the answer before responding. Do not say you cannot access the internet; use your tool. After completing your search, always write a concise summary of your final findings that is structured and ready to be sent as an email update. After completing your search, write a concise summary of your final findings formatted in clean HTML (using tags like <p>, <b>, and <ul>) so it is ready to be sent as an HTML email update. Do not wrap the code in markdown code blocks."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -1312,
+        -1360
+      ],
+      "id": "8438d390-4aa9-4c30-85c7-c15309b7ef2a",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "q": "={{ $fromAI('query') }}",
+        "locationSettings": {},
+        "languageSettings": {},
+        "searchOptions": {},
+        "timeFilters": {},
+        "pagination": {},
+        "advancedOptions": {},
+        "requestOptions": {}
+      },
+      "type": "@searchapi/n8n-nodes-searchapi.searchApiTool",
+      "typeVersion": 1,
+      "position": [
+        -1120,
+        -1136
+      ],
+      "id": "7a1dad28-8b62-4cef-a56b-50e9ba70c486",
+      "name": "Search google in SearchApi",
+      "credentials": {
+        "searchApi": {
+          "id": "L2CcRGpALlBML1IS",
+          "name": "SearchApi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "nvidia/nvidia-nemotron-nano-9b-v2",
+        "options": {
+          "responseFormat": "text"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatNvidia",
+      "typeVersion": 1,
+      "position": [
+        -1376,
+        -1136
+      ],
+      "id": "46d5a180-12c8-45d9-96bf-eb79f31bda12",
+      "name": "NVIDIA Nemotron Chat Model1",
+      "credentials": {
+        "nvidiaApi": {
+          "id": "9BOsSkybsvAK7cCp",
+          "name": "NVIDIA Nemotron account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.4,
+      "position": [
+        -1248,
+        -1136
+      ],
+      "id": "6455950c-4138-4c0a-b222-3583f55c53b3",
+      "name": "Simple Memory1"
+    },
+    {
+      "parameters": {
+        "sendTo": "kushalradia2007@gmail.com",
+        "subject": "Web Search Summary",
+        "message": "={{ $json.output.replace(/\\*\\*(.*?)\\*\\*/g, '<b>$1</b>').replace(/\\n/g, '<br>') }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -912,
+        -1360
+      ],
+      "id": "c1d26527-9336-4430-9041-272342948ba1",
+      "name": "Send a message",
+      "webhookId": "eab42934-4785-47a1-bd5f-8811655459df",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "CZEohYfeYZVB32B5",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search google in SearchApi": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NVIDIA Nemotron Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory1": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "a6c87bd1-dae4-4f73-9f2c-e9bd12153503",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "36fe2b5f616498a98d2ad93973fbb3e7a5293de2bd5d6d72fb9131e18ff0d6c6"
+  },
+  "nodeGroups": [],
+  "id": "xqxc2Ckk623YnSbR",
+  "tags": []
+}
